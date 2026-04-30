@@ -1,0 +1,17 @@
+# Meridian MMM — Dependencies
+# Install with: pip install -r requirements.txt
+#
+# Google Meridian must be installed from GitHub:
+#   pip install git+https://github.com/google/meridian.git
+#
+# Or uncomment the line below and pip will attempt it:
+# meridian @ git+https://github.com/google/meridian.git
+
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.7
+arviz>=0.16
+pymc>=5.0
+jax>=0.4
+jaxlib>=0.4
+scipy>=1.10
