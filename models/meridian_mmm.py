@@ -22,9 +22,7 @@ import matplotlib.pyplot as plt
 
 # Meridian imports - these come from the google/meridian GitHub repo
 try:
-    import meridian
     from meridian.model import Meridian
-    from meridian.data import load_data
     HAS_MERIDIAN = True
 except ImportError:
     HAS_MERIDIAN = False
@@ -106,8 +104,6 @@ def build_meridian_model(spend, revenue, controls):
     - Control variables (seasonality, holidays)
     - ROI priors
     """
-    n_weeks = len(spend)
-    n_channels = len(CHANNELS)
 
     # Initialise Meridian with data
     mmm = Meridian(
@@ -141,7 +137,7 @@ def build_meridian_model(spend, revenue, controls):
 def sample_model(mmm):
     """Run MCMC and return the fitted model."""
     print(f"\nRunning MCMC: {NUM_SAMPLES} samples × {NUM_CHAINS} chains...")
-    print(f"(This may take a few minutes — watch the progress bars)")
+    print("(This may take a few minutes — watch the progress bars)")
 
     mmm.sample(
         num_samples=NUM_SAMPLES,
