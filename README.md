@@ -129,3 +129,13 @@ requirements.txt              — meridian, pymc, arviz, numpy, pandas, matplotl
 ---
 
 MIT
+
+
+## Related
+
+- [ga4-attribution-models](https://github.com/GlitchG/ga4-attribution-models) — multi-touch attribution in BigQuery/Dataform
+- [ga4-bigquery-incremental](https://github.com/GlitchG/ga4-bigquery-incremental) — GA4 incremental refresh patterns
+- [bigquery-meridian-mmm](https://github.com/GlitchG/bigquery-meridian-mmm) — Bayesian MMM
+- [landing-page-ab-testing](https://github.com/GlitchG/landing-page-ab-testing) — GA4 A/B testing in BigQuery
+- [cohort-log-predict](https://github.com/GlitchG/cohort-log-predict) — cohort retention prediction
+- [receipt-sorter](https://github.com/GlitchG/receipt-sorter) — AI receipt classification
