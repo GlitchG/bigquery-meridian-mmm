@@ -2,6 +2,12 @@
 Marketing Mix Model using Google Meridian.
 Applied to GA4 ecommerce data with Bayesian inference.
 
+NOTE: This is a conceptual template. The API calls below (set_adstock,
+set_saturation, sample, get_trace, etc.) are illustrative only.
+Google's actual Meridian library uses a different API surface.
+See: https://github.com/google/meridian
+Adapt this script to the real API before running in production.
+
 Prerequisites:
     pip install -r requirements.txt
     # or: pip install git+https://github.com/google/meridian.git
@@ -14,7 +20,7 @@ import numpy as np
 import arviz as az
 import matplotlib.pyplot as plt
 
-# Meridian imports — these come from the google/meridian GitHub repo
+# Meridian imports - these come from the google/meridian GitHub repo
 try:
     import meridian
     from meridian.model import Meridian
@@ -22,9 +28,9 @@ try:
     HAS_MERIDIAN = True
 except ImportError:
     HAS_MERIDIAN = False
-    print("⚠️  Meridian not installed. Install with:")
+    print("WARNING: Meridian not installed. Install with:")
     print("   pip install git+https://github.com/google/meridian.git")
-    print("   Then re-run this script.")
+    print("   Then adapt this script to the real API before re-running.")
     exit(1)
 
 # ── Configuration ──────────────────────────────────────────────
@@ -169,11 +175,11 @@ def run_diagnostics(mmm):
 
         high_rhat = rhat_summary[rhat_summary > 1.05].dropna()
         if len(high_rhat) > 0:
-            f.write("⚠️  WARNING: Some parameters have R-hat > 1.05:\n")
+            f.write("WARNING: Some parameters have R-hat > 1.05:\n")
             f.write(str(high_rhat))
             f.write("\nConsider increasing NUM_SAMPLES or NUM_WARMUP.\n")
         else:
-            f.write("✅ All R-hat values < 1.05. Model has converged.\n")
+            f.write("All R-hat values < 1.05. Model has converged.\n")
 
     print(f"Diagnostics saved to {OUTPUT_DIR}/diagnostics_summary.txt")
 
@@ -272,4 +278,4 @@ if __name__ == "__main__":
     # 5. Results
     plot_results(mmm, spend)
 
-    print(f"\n✅ Done. All outputs in {OUTPUT_DIR}/")
+    print(f"\nDone. All outputs in {OUTPUT_DIR}/")
