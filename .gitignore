@@ -1,3 +1,9 @@
 .brain/
 
 .ruff_cache/
+__pycache__/
+*.pyc
+.DS_Store
+venv/
+*.log
+.env
