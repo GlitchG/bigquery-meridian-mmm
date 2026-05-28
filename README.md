@@ -56,7 +56,7 @@ pip install -r requirements.txt
 pip install git+https://github.com/google/meridian.git
 ```
 
-Meridian requires PyMC, which needs a C compiler. On macOS: `xcode-select --install`. On Linux: `apt install build-essential`.
+Meridian runs on TensorFlow Probability and ships prebuilt wheels, so no C compiler is needed — but TensorFlow is a heavy dependency and is picky about Python version. Use a supported Python (3.10–3.12) in a fresh virtualenv if the install fails.
 
 ## Running it on your GA4 data
 
@@ -117,7 +117,7 @@ models/
   meridian_mmm.py             — Meridian model config, MCMC sampling, diagnostics, plots
 
 GUIDE.md                      — Full step-by-step walkthrough with interpretation notes
-requirements.txt              — meridian, pymc, arviz, numpy, pandas, matplotlib, jax
+requirements.txt              — meridian, tensorflow, tensorflow-probability, arviz, numpy, pandas, matplotlib
 ```
 
 ## Other projects
