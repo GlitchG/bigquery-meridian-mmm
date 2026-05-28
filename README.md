@@ -10,7 +10,7 @@ This repo is a step-by-step guide to running Meridian on **your GA4 ecommerce da
 
 | | Simple MMM | Meridian |
 |---|:---:|:---:|
-| **Method** | OLS regression | Bayesian inference (PyMC) |
+| **Method** | OLS regression | Bayesian inference (TensorFlow Probability) |
 | **Output** | Single ROI number | Full probability distribution |
 | **Uncertainty** | None | Credible intervals for everything |
 | **Priors** | No | Yes — incorporate known channel efficiency ranges |

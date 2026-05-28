@@ -7,11 +7,13 @@
 # Or uncomment the line below and pip will attempt it:
 # meridian @ git+https://github.com/google/meridian.git
 
+# Google Meridian runs on TensorFlow Probability (not PyMC/JAX).
+# Installing meridian itself pulls in tensorflow + tensorflow-probability;
+# they are listed here explicitly for clarity.
 numpy>=1.24
 pandas>=2.0
 matplotlib>=3.7
 arviz>=0.16
-pymc>=5.0
-jax>=0.4
-jaxlib>=0.4
+tensorflow>=2.13
+tensorflow-probability>=0.21
 scipy>=1.10
