@@ -1,0 +1,15 @@
+ILLUSTRATIVE EXAMPLE — representative of a converged fit on the synthetic
+dataset, not a captured run. Run models/meridian_mmm.py for real numbers.
+See output/README.md.
+
+Meridian MMM — posterior ROI by channel
+=========================================================
+Channel     ROI (median)              90% CI   P(ROI>1)
+---------------------------------------------------------
+search             3.08        [2.46, 3.81]        99%
+tv                 2.39        [1.78, 3.14]        98%
+digital            1.83        [1.31, 2.49]        95%
+tiktok             1.48        [0.97, 2.10]        87%
+ooh                1.21        [0.74, 1.83]        76%
+social             0.92        [0.51, 1.44]        38%
+=========================================================

@@ -16,4 +16,4 @@ jobs:
       - name: Install deps
         run: pip install ruff
       - name: Lint
-        run: ruff check models/
+        run: ruff check models/ python/

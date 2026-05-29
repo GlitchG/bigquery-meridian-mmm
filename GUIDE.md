@@ -6,8 +6,10 @@ A step-by-step walkthrough from GA4 export to budget optimisation. I wrote this 
 
 - GA4 property with ecommerce tracking and BigQuery export enabled
 - Media spend data (Facebook Ads, Google Ads, TikTok, etc.) — see `sql/00_setup_media_tables.sql` for the schema
-- Python 3.10+ with Meridian installed (`pip install -r requirements.txt`)
-- At least 52 weeks of data (104+ recommended)
+- Python 3.10–3.12 with Meridian installed (`pip install -r requirements.txt`)
+- At least 52 weeks of data (156 / 3 years recommended for a national model)
+
+> **Just want to see it run?** Skip straight to a synthetic dataset: `python python/generate_sample_data.py` then `python models/meridian_mmm.py`. No BigQuery required. See Step 2.5 for the column dictionary.
 
 ## Step 1: Export media spend data
 
@@ -80,29 +82,61 @@ ORDER BY ms.week_start, ms.channel
 
 Export as CSV and save as `mmm_input.csv` in the project root.
 
+### 2.5 The `mmm_input.csv` data dictionary
+
+The model script reads one **long-format** CSV — one row per week per channel. This is exactly what the JOIN above produces, and also what `python/generate_sample_data.py` writes. Each column:
+
+| Column | Type | Level | Required | Description |
+|---|---|---|---|---|
+| `week_start` | DATE (`YYYY-MM-DD`) | week | yes | First day of the week (Monday). The model's time axis. |
+| `channel` | STRING | row | yes | Channel name. Must match the `CHANNELS` list in the script (`search`, `tv`, `digital`, `tiktok`, `ooh`, `social`). |
+| `spend` | FLOAT | week × channel | yes | Media spend for that channel that week, in your currency. Drives the ROI estimate. |
+| `impressions` | INT | week × channel | yes | Impressions for that channel that week. Meridian uses these as the media execution variable. If you only have spend, set `impressions = spend` (the model still works; ROI is unaffected). |
+| `clicks` | INT | week × channel | no | Not used by the model — kept for your own CPM/CTR analysis. |
+| `revenue` | FLOAT | week | yes | Total weekly revenue (the KPI). **Repeated on every channel row for that week** — the loader takes one value per week, so all rows for a given week must carry the same number. |
+| `is_holiday` | 0/1 | week | yes | Holiday-week flag (control). |
+| `is_black_friday_week` | 0/1 | week | yes | Black Friday week flag (control). |
+| `is_summer` | 0/1 | week | yes | Summer-period flag (control). |
+| `is_promo_period` | 0/1 | week | yes | Promo-week flag (control). |
+| `month_num` | INT (1–12) | week | no | Kept for reference; not fed as a control (raw month as a linear term would be misleading). |
+
+**Filling it in — bare minimum vs. ideal:**
+
+- **Bare minimum to run:** `week_start`, `channel`, `spend`, `impressions`, `revenue`, and the four control flags, for **at least 52 weeks**. If you have no impressions, copy `spend` into `impressions`.
+- **Recommended:** **156 weeks (3 years)** — Meridian's guidance for a national model — so it can separate annual seasonality from channel effects. Real impressions per channel. Accurate control flags for every known sales event.
+
+> **Sanity check before fitting:** every channel should have *varying* spend week to week. If two channels always move together (e.g. TV and radio always run the same weeks at proportional budgets), Meridian can't tell them apart and will split the credit arbitrarily. The synthetic generator deliberately varies each channel independently to avoid this.
+
 ## Step 3: Configure the model
 
 Open `models/meridian_mmm.py` and adjust these sections:
 
 ### Channel list
 ```python
-CHANNELS = ['tv', 'digital', 'search', 'social', 'tiktok', 'ooh']
+CHANNELS = ["search", "tv", "digital", "tiktok", "ooh", "social"]
+CONTROL_COLS = ["is_holiday", "is_black_friday_week", "is_summer", "is_promo_period"]
 ```
-Remove channels you don't have. Add channels you do. Keep the order consistent with your CSV.
-
-### Adstock priors
-```python
-ADSTOCK_PRIOR_MEAN = 0.5   # Half-life: 1-2 weeks for digital, 2-4 for TV
-ADSTOCK_PRIOR_SD = 0.2     # How uncertain you are
-```
-Higher mean = longer carryover. Digital channels typically decay faster (0.3-0.5); TV and radio decay slower (0.5-0.8).
+Remove channels you don't have and add channels you do — the names must match the `channel` values in your CSV.
 
 ### ROI priors
+Meridian uses an **ROI-based prior** (`media_prior_type='roi'`): you state a prior belief about each channel's return, and the model updates it from the data. The script sets a single weakly-informative LogNormal prior for all channels:
 ```python
-ROI_PRIOR_MEAN = 2.0       # Prior belief: each channel returns ~2x
-ROI_PRIOR_SD = 1.5         # Wide uncertainty if you're not sure
+ROI_PRIOR_MU = np.log(2.0)   # prior median ROI ≈ 2x
+ROI_PRIOR_SIGMA = 0.7        # 90% prior range ≈ 0.5x–8x
 ```
-If you have historical data or lift tests, tighten the priors. If this is your first MMM, keep them wide.
+If you have lift tests or strong per-channel beliefs, tighten `ROI_PRIOR_SIGMA` (and you can give each channel its own prior by passing a batched `LogNormal` to `roi_m`). For a first MMM, keep it wide.
+
+### Adstock window
+```python
+MAX_LAG = 8   # weeks of carryover Meridian considers
+```
+Meridian fits the geometric adstock decay rate per channel from the data; `MAX_LAG` just caps how many past weeks contribute. 8 weeks is plenty for digital; raise it if you run long TV bursts.
+
+### Sampling
+```python
+N_CHAINS, N_ADAPT, N_BURNIN, N_KEEP = 4, 1000, 500, 1000
+```
+Lower these for a quick smoke test; raise `N_KEEP`/`N_CHAINS` for a production fit. Convergence (R-hat) is reported in the model summary.
 
 ## Step 4: Run the model
 
@@ -111,28 +145,30 @@ python models/meridian_mmm.py
 ```
 
 What happens:
-1. Meridian reads the CSV
-2. Configures the model with adstock, saturation, and prior distributions
-3. Runs MCMC sampling (this takes a few minutes — the progress bar shows chains)
-4. Produces diagnostic plots in `output/`
+1. Meridian reads the CSV and pivots it into its wide internal layout (no geo column → a single-geo national model)
+2. Configures the model with geometric adstock, Hill saturation, and the ROI priors
+3. Runs NUTS MCMC sampling (this takes several minutes — progress bars show the chains)
+4. Writes `output/roi_summary.txt` and `output/summary_output.html`
 
 ## Step 5: Check diagnostics
 
-Before trusting any ROI numbers, verify the model converged:
+Before trusting any ROI numbers, verify the model converged. Open **`output/summary_output.html`** — Meridian's built-in report. It contains:
 
 ### R-hat values
-Open `output/diagnostics_summary.txt`. Every parameter should have R-hat < 1.05, ideally < 1.01. If any parameter exceeds this, increase `NUM_SAMPLES` and `NUM_WARMUP` in the script and re-run.
+Every parameter should have R-hat < 1.05, ideally < 1.01. If any parameter exceeds this, increase `N_KEEP` / `N_BURNIN` (and optionally `N_ADAPT`) in the script and re-run.
 
-### Trace plots
-Open `output/trace_plots.png`. Each parameter gets one row. The chains (different colours) should overlap completely — no separation, no drift. If chains don't mix, the model hasn't converged.
+### Model fit
+The actual-vs-expected revenue plot should track closely. Large systematic gaps mean missing controls or too short a history.
 
 ### Effective sample size
-Should be > 100 for key parameters (ROI, adstock decay). If ESS is low, increase the number of samples.
+Should be comfortably > 100 for the ROI parameters. If it's low, raise `N_KEEP`.
+
+> On the synthetic dataset, the recovered ROIs should land near the ground-truth values printed by `generate_sample_data.py` (search ≈ 3.0, tv ≈ 2.4, digital ≈ 1.8, tiktok ≈ 1.5, ooh ≈ 1.2, social ≈ 0.9). That round-trip is the cheapest confirmation the pipeline is wired up correctly.
 
 ## Step 6: Interpret results
 
 ### ROI distributions
-`output/roi_posteriors.png` shows the posterior distribution for each channel's ROI. Key numbers to pull from the summary output:
+`output/roi_summary.txt` lists, per channel:
 
 - **Median ROI** — the most likely return per euro spent
 - **90% credible interval** — there's a 90% chance the true ROI is in this range
@@ -146,13 +182,20 @@ tv:      ROI = 2.47  [1.65, 3.39]  P(ROI>1) = 0.98  → likely profitable
 ```
 
 ### Response curves
-`output/response_curves.png` plots spend vs predicted revenue per channel, with uncertainty bands. Look for:
+`summary_output.html` includes spend-vs-incremental-revenue curves per channel, with uncertainty bands. Look for:
 
 - **Saturation point** — the spend level where the curve flattens. Spending more beyond this point adds little.
 - **Shape** — a steep initial slope means the first euros are very efficient. A flat curve from the start means the channel isn't working.
 
-### Budget optimiser
-`output/budget_optimisation.png` shows the optimal allocation given a total budget constraint. It respects saturation — it won't tell you to put all your money into search if search is already saturated.
+### Budget optimisation (optional next step)
+The script stops at ROI + summary. To turn the fit into a budget recommendation, Meridian ships an optimiser:
+```python
+from meridian.analysis import optimizer
+opt = optimizer.BudgetOptimizer(mmm)
+results = opt.optimize()           # respects each channel's saturation curve
+results.output_optimization_summary("optimization_output.html", "output")
+```
+It won't pour everything into `search` if search is already saturated — it allocates against the response curves.
 
 ## Step 7: Act on the findings
 
