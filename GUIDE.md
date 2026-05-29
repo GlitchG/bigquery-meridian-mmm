@@ -148,7 +148,7 @@ What happens:
 1. Meridian reads the CSV and pivots it into its wide internal layout (no geo column → a single-geo national model)
 2. Configures the model with geometric adstock, Hill saturation, and the ROI priors
 3. Runs NUTS MCMC sampling (this takes several minutes — progress bars show the chains)
-4. Writes `output/roi_summary.txt` and `output/summary_output.html`
+4. Writes `output/roi_summary.txt`, `output/summary_output.html`, and `output/optimization_output.html`
 
 ## Step 5: Check diagnostics
 
@@ -187,15 +187,18 @@ tv:      ROI = 2.47  [1.65, 3.39]  P(ROI>1) = 0.98  → likely profitable
 - **Saturation point** — the spend level where the curve flattens. Spending more beyond this point adds little.
 - **Shape** — a steep initial slope means the first euros are very efficient. A flat curve from the start means the channel isn't working.
 
-### Budget optimisation (optional next step)
-The script stops at ROI + summary. To turn the fit into a budget recommendation, Meridian ships an optimiser:
+### Budget optimisation
+The script runs Meridian's `BudgetOptimizer` and writes `output/optimization_output.html`, plus a current-vs-optimised spend table to the console. It's a **fixed-budget** reallocation: same total spend, shifted toward the channels with the best marginal return, bounded by each channel's saturation curve — so it won't pour everything into `search` if search is already saturated.
+
 ```python
 from meridian.analysis import optimizer
-opt = optimizer.BudgetOptimizer(mmm)
-results = opt.optimize()           # respects each channel's saturation curve
+results = optimizer.BudgetOptimizer(mmm).optimize()   # fixed_budget=True by default
 results.output_optimization_summary("optimization_output.html", "output")
+results.optimized_data.spend      # optimised euros per channel
+results.nonoptimized_data.spend   # the historical baseline it compares against
 ```
-It won't pour everything into `search` if search is already saturated — it allocates against the response curves.
+
+To optimise for a *different* total or a target ROI instead of a fixed budget, pass `budget=` or `target_roi=` to `optimize()`.
 
 ## Step 7: Act on the findings
 
