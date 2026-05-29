@@ -25,7 +25,7 @@ import pandas as pd
 from meridian import constants
 from meridian.data import data_frame_input_data_builder as builder_lib
 from meridian.model import model, prior_distribution, spec
-from meridian.analysis import analyzer, summarizer
+from meridian.analysis import analyzer, optimizer, summarizer
 import tensorflow_probability as tfp
 
 # ── Configuration ──────────────────────────────────────────────
@@ -199,6 +199,31 @@ def write_model_summary(mmm):
     print(f"Model results summary written to {OUTPUT_DIR}/summary_output.html")
 
 
+def optimise_budget(mmm):
+    """Reallocate the historical budget to maximise revenue, respecting saturation.
+
+    Fixed-budget optimisation: keeps total spend the same as the observed period
+    and shifts euros toward the channels with the best marginal return, bounded by
+    each channel's response curve. Writes an HTML summary and prints the proposed
+    per-channel spend shift.
+    """
+    results = optimizer.BudgetOptimizer(mmm).optimize()  # fixed_budget=True by default
+    results.output_optimization_summary("optimization_output.html", OUTPUT_DIR)
+    print(f"Budget optimisation summary written to {OUTPUT_DIR}/optimization_output.html")
+
+    # Non-optimised (historical) vs optimised spend per channel.
+    before = results.nonoptimized_data.spend.to_series()
+    after = results.optimized_data.spend.to_series()
+    header = f"{'Channel':<10}{'Current spend':>16}{'Optimised spend':>18}{'Change':>10}"
+    lines = ["Budget reallocation (same total budget)", "=" * len(header), header, "-" * len(header)]
+    for ch in before.index:
+        b, a = float(before[ch]), float(after[ch])
+        pct = (a - b) / b * 100 if b else float("nan")
+        lines.append(f"{ch:<10}{b:>16,.0f}{a:>18,.0f}{pct:>9.0f}%")
+    lines.append("=" * len(header))
+    print("\n" + "\n".join(lines))
+
+
 # ── Main ───────────────────────────────────────────────────────
 
 def main():
@@ -213,6 +238,7 @@ def main():
     mmm = sample_model(mmm)
     report_roi(mmm)
     write_model_summary(mmm)
+    optimise_budget(mmm)
 
     print(f"\nDone. All outputs in {OUTPUT_DIR}/")
 
