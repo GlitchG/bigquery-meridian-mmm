@@ -7,3 +7,9 @@ __pycache__/
 venv/
 *.log
 .env
+
+# Generated model outputs (keep the tracked example + README)
+output/roi_summary.txt
+output/summary_output.html
+output/optimization_output.html
+output/*.png

@@ -1,277 +1,221 @@
 """
-Marketing Mix Model using Google Meridian.
-Applied to GA4 ecommerce data with Bayesian inference.
+Marketing Mix Model using Google Meridian (real API).
 
-NOTE: This is a conceptual template. The API calls below (set_adstock,
-set_saturation, sample, get_trace, etc.) are illustrative only.
-Google's actual Meridian library uses a different API surface.
-See: https://github.com/google/meridian
-Adapt this script to the real API before running in production.
+Fits a national, revenue-based Bayesian MMM on weekly GA4 ecommerce data:
+geometric adstock + Hill saturation per channel, ROI priors, NUTS sampling,
+then ROI posteriors and a model-results summary.
 
-Prerequisites:
+Quick start (synthetic data — no BigQuery needed):
     pip install -r requirements.txt
-    # or: pip install git+https://github.com/google/meridian.git
+    python python/generate_sample_data.py   # writes mmm_input.csv
+    python models/meridian_mmm.py
 
-Data: CSV export from BigQuery (see GUIDE.md Step 2.4 for the JOIN query)
+On your own data, export the BigQuery tables to the same long-format CSV
+(see GUIDE.md for the column dictionary and the export query), then run the
+model script unchanged.
+
+API reference: https://developers.google.com/meridian
 """
 
-import pandas as pd
-import numpy as np
-import arviz as az
-import matplotlib.pyplot as plt
+import os
 
-# Meridian imports - these come from the google/meridian GitHub repo
-try:
-    from meridian.model import Meridian
-    HAS_MERIDIAN = True
-except ImportError:
-    HAS_MERIDIAN = False
-    print("WARNING: Meridian not installed. Install with:")
-    print("   pip install git+https://github.com/google/meridian.git")
-    print("   Then adapt this script to the real API before re-running.")
-    exit(1)
+import numpy as np
+import pandas as pd
+
+from meridian import constants
+from meridian.data import data_frame_input_data_builder as builder_lib
+from meridian.model import model, prior_distribution, spec
+from meridian.analysis import analyzer, summarizer
+import tensorflow_probability as tfp
 
 # ── Configuration ──────────────────────────────────────────────
 
-DATA_FILE = "mmm_input.csv"          # CSV exported from BigQuery
-OUTPUT_DIR = "output/"               # Where to save plots and diagnostics
-CHANNELS = ['tv', 'digital', 'search', 'social', 'tiktok', 'ooh']
+DATA_FILE = "mmm_input.csv"          # long-format CSV (see generate_sample_data.py / GUIDE.md)
+OUTPUT_DIR = "output"                # where plots, summary, and ROI table are written
+CHANNELS = ["search", "tv", "digital", "tiktok", "ooh", "social"]
+CONTROL_COLS = ["is_holiday", "is_black_friday_week", "is_summer", "is_promo_period"]
 
-# Adstock priors: how long does ad impact persist?
-# Higher mean = longer carryover. Digital: 0.3-0.5, TV: 0.5-0.8.
-ADSTOCK_MEAN = 0.5
-ADSTOCK_SD = 0.2
+# ROI prior (LogNormal, in revenue-per-euro units). Wide enough to be weakly
+# informative: median ROI ~2, but the 90% range spans roughly 0.5–8.
+# Tighten these if you have lift-test results or strong priors per channel.
+ROI_PRIOR_MU = np.log(2.0)
+ROI_PRIOR_SIGMA = 0.7
 
-# ROI priors: prior belief about return per euro spent
-# If you have historical data, tighten these. Otherwise keep them wide.
-ROI_PRIOR_MEAN = 2.0
-ROI_PRIOR_SD = 1.5
+MAX_LAG = 8          # weeks of adstock carryover Meridian considers
+CONFIDENCE = 0.90    # credible-interval level reported in the summary
 
-# MCMC sampling
-NUM_SAMPLES = 2000     # Posterior samples per chain
-NUM_WARMUP = 1000      # Burn-in samples (discarded)
-NUM_CHAINS = 4         # Independent chains for convergence diagnostics
+# MCMC settings. Lower n_keep / n_chains for a fast smoke test; raise for a
+# production fit. Convergence is checked via R-hat in the model summary.
+N_CHAINS = 4
+N_ADAPT = 1000
+N_BURNIN = 500
+N_KEEP = 1000
+N_PRIOR = 500
+SEED = 0
+
 
 # ── Data Loading ───────────────────────────────────────────────
 
 def load_and_prep_data(csv_path):
-    """Load the BigQuery CSV export and pivot into Meridian format."""
-    df = pd.read_csv(csv_path, parse_dates=['week_start'])
+    """Load the long-format CSV and pivot into Meridian's wide layout.
 
-    # Pivot spend: rows=weeks, columns=channels, values=spend
-    spend_wide = df.pivot_table(
-        index='week_start',
-        columns='channel',
-        values='spend',
-        aggfunc='sum'
-    ).fillna(0)
+    Long format (one row per week per channel) is what the BigQuery pipeline
+    and generate_sample_data.py emit. Meridian wants one row per week with a
+    `<channel>_spend` and `<channel>_impression` column per channel, plus the
+    weekly KPI and control columns.
+    """
+    df = pd.read_csv(csv_path)
 
-    # Ensure all channels exist (fill missing ones with zeros)
+    spend = df.pivot_table(index="week_start", columns="channel", values="spend", aggfunc="sum")
+    impressions = df.pivot_table(index="week_start", columns="channel", values="impressions", aggfunc="sum")
+
     for ch in CHANNELS:
-        if ch not in spend_wide.columns:
-            spend_wide[ch] = 0
-    spend_wide = spend_wide[CHANNELS]
+        if ch not in spend.columns:
+            spend[ch] = 0.0
+            impressions[ch] = 0.0
 
-    # Revenue: aggregate to weekly
-    revenue = df.groupby('week_start')['revenue'].sum()
-    # Align with spend index
-    revenue = revenue.reindex(spend_wide.index)
+    wide = pd.DataFrame(index=spend.index)
+    for ch in CHANNELS:
+        wide[f"{ch}_spend"] = spend[ch].fillna(0.0)
+        wide[f"{ch}_impression"] = impressions[ch].fillna(0.0)
 
-    # Control variables: aggregate by week
-    controls = df.groupby('week_start').agg({
-        'is_holiday': 'max',
-        'is_black_friday_week': 'max',
-        'is_summer': 'max',
-        'is_promo_period': 'max',
-        'month_num': 'first',
-    }).reindex(spend_wide.index).fillna(0)
+    # revenue + controls are week-level: take the per-week value (first row).
+    week_level = df.groupby("week_start").agg(
+        revenue=("revenue", "first"),
+        **{c: (c, "max") for c in CONTROL_COLS},
+    )
+    wide = wide.join(week_level)
 
-    print(f"Loaded {len(spend_wide)} weeks across {len(CHANNELS)} channels")
-    print(f"Date range: {spend_wide.index.min().date()} to {spend_wide.index.max().date()}")
-    print(f"Total revenue: €{revenue.sum():,.0f}")
-    print(f"Total spend: €{spend_wide.sum().sum():,.0f}")
+    wide = wide.reset_index().rename(columns={"index": "week_start"})
+    wide["week_start"] = pd.to_datetime(wide["week_start"]).dt.strftime("%Y-%m-%d")
+    wide = wide.sort_values("week_start").reset_index(drop=True)
 
-    return spend_wide, revenue, controls
+    print(f"Loaded {len(wide)} weeks across {len(CHANNELS)} channels")
+    print(f"Date range: {wide['week_start'].min()} to {wide['week_start'].max()}")
+    print(f"Total revenue: EUR {wide['revenue'].sum():,.0f}")
+    spend_cols = [f"{ch}_spend" for ch in CHANNELS]
+    print(f"Total spend:   EUR {wide[spend_cols].to_numpy().sum():,.0f}")
+    return wide
 
 
 # ── Model Specification ────────────────────────────────────────
 
-def build_meridian_model(spend, revenue, controls):
+def build_input_data(wide):
+    """Build a Meridian InputData object from the wide weekly DataFrame.
+
+    No geo column -> Meridian builds a single-geo (national) model.
     """
-    Configure a Meridian model with:
-    - Geometric adstock per channel
-    - Hill saturation per channel
-    - Control variables (seasonality, holidays)
-    - ROI priors
-    """
-
-    # Initialise Meridian with data
-    mmm = Meridian(
-        KPI=revenue.values,
-        media=spend.values,
-        controls=controls.values if controls is not None else None,
-        media_names=CHANNELS,
+    builder = builder_lib.DataFrameInputDataBuilder(
+        kpi_type=constants.REVENUE,
+        default_kpi_column="revenue",
+        default_time_column="week_start",
     )
-
-    # Set adstock: geometric decay with prior
-    mmm.set_adstock(
-        model='geometric',
-        prior_mean=ADSTOCK_MEAN,
-        prior_sd=ADSTOCK_SD,
+    builder = (
+        builder
+        .with_kpi(wide, kpi_col="revenue", time_col="week_start")
+        .with_controls(wide, control_cols=CONTROL_COLS, time_col="week_start")
+        .with_media(
+            wide,
+            media_cols=[f"{ch}_impression" for ch in CHANNELS],
+            media_spend_cols=[f"{ch}_spend" for ch in CHANNELS],
+            media_channels=CHANNELS,
+            time_col="week_start",
+        )
     )
+    return builder.build()
 
-    # Set saturation: Hill function (diminishing returns)
-    mmm.set_saturation(model='hill')
 
-    # Set ROI prior: regularising prior on channel coefficients
-    mmm.set_roi_prior(
-        mean=ROI_PRIOR_MEAN,
-        sd=ROI_PRIOR_SD,
+def build_model(input_data):
+    """Configure priors + model spec and instantiate the Meridian model."""
+    prior = prior_distribution.PriorDistribution(
+        roi_m=tfp.distributions.LogNormal(
+            ROI_PRIOR_MU, ROI_PRIOR_SIGMA, name=constants.ROI_M
+        )
     )
+    model_spec = spec.ModelSpec(
+        prior=prior,
+        max_lag=MAX_LAG,
+        media_prior_type=constants.TREATMENT_PRIOR_TYPE_ROI,  # 'roi'
+    )
+    return model.Meridian(input_data=input_data, model_spec=model_spec)
 
-    return mmm
 
-
-# ── Sampling & Diagnostics ─────────────────────────────────────
+# ── Sampling ───────────────────────────────────────────────────
 
 def sample_model(mmm):
-    """Run MCMC and return the fitted model."""
-    print(f"\nRunning MCMC: {NUM_SAMPLES} samples × {NUM_CHAINS} chains...")
-    print("(This may take a few minutes — watch the progress bars)")
+    """Draw prior + posterior samples (NUTS). This is the slow step."""
+    print(f"\nSampling prior ({N_PRIOR} draws)...")
+    mmm.sample_prior(N_PRIOR)
 
-    mmm.sample(
-        num_samples=NUM_SAMPLES,
-        num_warmup=NUM_WARMUP,
-        num_chains=NUM_CHAINS,
+    print(f"Sampling posterior: {N_CHAINS} chains x {N_KEEP} kept draws "
+          f"(adapt={N_ADAPT}, burnin={N_BURNIN})...")
+    print("(This runs NUTS MCMC and can take several minutes.)")
+    mmm.sample_posterior(
+        n_chains=N_CHAINS,
+        n_adapt=N_ADAPT,
+        n_burnin=N_BURNIN,
+        n_keep=N_KEEP,
+        seed=SEED,
     )
-
     return mmm
-
-
-def run_diagnostics(mmm):
-    """Check convergence and produce diagnostic plots."""
-    import os
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    trace = mmm.get_trace()
-
-    # R-hat (convergence diagnostic)
-    rhat = az.rhat(trace)
-    rhat_summary = rhat.to_dataframe()
-
-    with open(f"{OUTPUT_DIR}/diagnostics_summary.txt", "w") as f:
-        f.write("Meridian MMM — Convergence Diagnostics\n")
-        f.write("=" * 50 + "\n\n")
-        f.write(f"Chains: {NUM_CHAINS}\n")
-        f.write(f"Samples per chain: {NUM_SAMPLES}\n")
-        f.write(f"Warmup: {NUM_WARMUP}\n\n")
-        f.write("R-hat values (should be < 1.05, ideally < 1.01):\n")
-        f.write(str(rhat_summary))
-        f.write("\n\n")
-
-        high_rhat = rhat_summary[rhat_summary > 1.05].dropna()
-        if len(high_rhat) > 0:
-            f.write("WARNING: Some parameters have R-hat > 1.05:\n")
-            f.write(str(high_rhat))
-            f.write("\nConsider increasing NUM_SAMPLES or NUM_WARMUP.\n")
-        else:
-            f.write("All R-hat values < 1.05. Model has converged.\n")
-
-    print(f"Diagnostics saved to {OUTPUT_DIR}/diagnostics_summary.txt")
-
-    # Trace plots
-    az.plot_trace(trace, compact=True)
-    plt.suptitle("Meridian MMM — Trace Plots", fontsize=14)
-    plt.tight_layout()
-    plt.savefig(f"{OUTPUT_DIR}/trace_plots.png", dpi=150)
-    plt.close()
-    print(f"Trace plots saved to {OUTPUT_DIR}/trace_plots.png")
-
-    # Effective sample size
-    ess = az.ess(trace)
-    print(f"\nEffective sample size (min): {ess.min().values:.0f}")
-    print(f"Effective sample size (median): {np.median(ess.values):.0f}")
-
-    return rhat
 
 
 # ── Results ────────────────────────────────────────────────────
 
-def plot_results(mmm, spend):
-    """Produce ROI distributions and response curves."""
+def report_roi(mmm):
+    """Extract posterior ROI per channel and write a summary table."""
+    az = analyzer.Analyzer(mmm)
+    # shape: (n_chains, n_draws, n_channels) with geo aggregated away
+    roi = np.asarray(az.roi(use_posterior=True, aggregate_geos=True))
+    roi = roi.reshape(-1, roi.shape[-1])  # flatten chains x draws
 
-    # ROI posterior distributions
-    roi_samples = mmm.get_roi_samples()
-
-    fig, axes = plt.subplots(len(CHANNELS), 1, figsize=(8, 3 * len(CHANNELS)))
-    if len(CHANNELS) == 1:
-        axes = [axes]
-
+    lo = (1 - CONFIDENCE) / 2 * 100
+    hi = (1 + CONFIDENCE) / 2 * 100
+    lines = []
+    header = f"{'Channel':<10}{'ROI (median)':>14}{'90% CI':>22}{'P(ROI>1)':>11}"
+    sep = "-" * len(header)
+    lines += ["Meridian MMM — posterior ROI by channel", "=" * len(header), header, sep]
     for i, ch in enumerate(CHANNELS):
-        ch_roi = roi_samples[:, i]
-        median = np.median(ch_roi)
-        lower = np.percentile(ch_roi, 5)
-        upper = np.percentile(ch_roi, 95)
-        prob_profitable = np.mean(ch_roi > 1.0)
+        s = roi[:, i]
+        med, low, up = np.median(s), np.percentile(s, lo), np.percentile(s, hi)
+        p_profit = float(np.mean(s > 1.0))
+        lines.append(f"{ch:<10}{med:>14.2f}{f'[{low:.2f}, {up:.2f}]':>22}{p_profit:>11.0%}")
+    lines.append("=" * len(header))
 
-        axes[i].hist(ch_roi, bins=50, color='steelblue', edgecolor='white', alpha=0.8)
-        axes[i].axvline(1.0, color='red', linestyle='--', alpha=0.5, label='Breakeven')
-        axes[i].axvline(median, color='darkblue', linestyle='-', alpha=0.8, label=f'Median: {median:.2f}')
-        axes[i].axvline(lower, color='grey', linestyle=':', alpha=0.5)
-        axes[i].axvline(upper, color='grey', linestyle=':', alpha=0.5)
-        axes[i].set_title(
-            f"{ch}: ROI = {median:.2f}  [{lower:.2f}, {upper:.2f}]  P(ROI>1) = {prob_profitable:.0%}"
-        )
-        axes[i].legend(fontsize=8)
+    table = "\n".join(lines)
+    print("\n" + table)
+    with open(os.path.join(OUTPUT_DIR, "roi_summary.txt"), "w") as f:
+        f.write(table + "\n")
+    print(f"\nROI summary written to {OUTPUT_DIR}/roi_summary.txt")
 
-    plt.tight_layout()
-    plt.savefig(f"{OUTPUT_DIR}/roi_posteriors.png", dpi=150)
-    plt.close()
-    print(f"ROI posteriors saved to {OUTPUT_DIR}/roi_posteriors.png")
 
-    # Response curves
-    mmm.plot_response_curves()
-    plt.savefig(f"{OUTPUT_DIR}/response_curves.png", dpi=150)
-    plt.close()
-    print(f"Response curves saved to {OUTPUT_DIR}/response_curves.png")
-
-    # Print summary table
-    print("\n" + "=" * 70)
-    print(f"{'Channel':<12} {'ROI (median)':>12} {'90% CI':>20} {'P(ROI>1)':>10}")
-    print("-" * 70)
-    for i, ch in enumerate(CHANNELS):
-        ch_roi = roi_samples[:, i]
-        median = np.median(ch_roi)
-        lower = np.percentile(ch_roi, 5)
-        upper = np.percentile(ch_roi, 95)
-        prob = np.mean(ch_roi > 1.0)
-        print(f"{ch:<12} {median:>12.2f} [{lower:.2f}, {upper:.2f}]   {prob:>8.0%}")
-    print("=" * 70)
+def write_model_summary(mmm):
+    """Write Meridian's full HTML results summary (fit, R-hat, response curves)."""
+    start = mmm.input_data.time.values[0]
+    end = mmm.input_data.time.values[-1]
+    summarizer.Summarizer(mmm).output_model_results_summary(
+        "summary_output.html", OUTPUT_DIR, str(start), str(end)
+    )
+    print(f"Model results summary written to {OUTPUT_DIR}/summary_output.html")
 
 
 # ── Main ───────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    import os
+def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-
     print("=" * 60)
-    print("Meridian MMM — GA4 Ecommerce")
+    print("Meridian MMM — GA4 Ecommerce (national, revenue-based)")
     print("=" * 60)
 
-    # 1. Load data
-    spend, revenue, controls = load_and_prep_data(DATA_FILE)
-
-    # 2. Build model
-    mmm = build_meridian_model(spend, revenue, controls)
-
-    # 3. Sample
+    wide = load_and_prep_data(DATA_FILE)
+    input_data = build_input_data(wide)
+    mmm = build_model(input_data)
     mmm = sample_model(mmm)
-
-    # 4. Diagnostics
-    run_diagnostics(mmm)
-
-    # 5. Results
-    plot_results(mmm, spend)
+    report_roi(mmm)
+    write_model_summary(mmm)
 
     print(f"\nDone. All outputs in {OUTPUT_DIR}/")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,50 @@
+name: Data prep
+
+# Runs the synthetic data generator end-to-end so the data layer the model
+# depends on stays green. (The Meridian fit itself isn't run in CI — TensorFlow
+# MCMC is too heavy/slow for a free runner — but every step up to it is.)
+
+on: [push, pull_request]
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install data-prep deps
+        run: pip install "numpy>=1.24" "pandas>=2.0"
+      - name: Generate sample data
+        run: python python/generate_sample_data.py
+      - name: Validate output schema and ground-truth ROI recovery
+        run: |
+          python - <<'PY'
+          import pandas as pd
+
+          df = pd.read_csv("mmm_input.csv")
+          channels = ["search", "tv", "digital", "tiktok", "ooh", "social"]
+          expected_cols = {
+              "week_start", "channel", "spend", "impressions", "clicks", "revenue",
+              "is_holiday", "is_black_friday_week", "is_summer", "is_promo_period", "month_num",
+          }
+
+          assert expected_cols <= set(df.columns), f"missing columns: {expected_cols - set(df.columns)}"
+          assert set(df["channel"]) == set(channels), "channel set mismatch"
+
+          n_weeks = df["week_start"].nunique()
+          assert n_weeks >= 52, f"need >=52 weeks, got {n_weeks}"
+          assert len(df) == n_weeks * len(channels), "expected one row per week per channel"
+
+          # revenue must be constant within a week (it is a week-level value)
+          per_week_rev = df.groupby("week_start")["revenue"].nunique()
+          assert (per_week_rev == 1).all(), "revenue varies within a week"
+
+          # spend must vary per channel (collinear/constant spend breaks MMM identifiability)
+          for ch in channels:
+              s = df.loc[df["channel"] == ch, "spend"]
+              assert s.std() > 0, f"{ch} spend does not vary"
+
+          print(f"OK: {len(df)} rows, {n_weeks} weeks, {len(channels)} channels")
+          PY

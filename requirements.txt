@@ -1,19 +1,17 @@
 # Meridian MMM — Dependencies
 # Install with: pip install -r requirements.txt
 #
-# Google Meridian must be installed from GitHub:
-#   pip install git+https://github.com/google/meridian.git
-#
-# Or uncomment the line below and pip will attempt it:
-# meridian @ git+https://github.com/google/meridian.git
+# Requires Python 3.10–3.12 (TensorFlow does not yet ship wheels for 3.13+).
+# Use a fresh virtualenv if the install fails.
 
-# Google Meridian runs on TensorFlow Probability (not PyMC/JAX).
-# Installing meridian itself pulls in tensorflow + tensorflow-probability;
-# they are listed here explicitly for clarity.
+# Google Meridian is published on PyPI as `google-meridian`. Installing it
+# pulls in tensorflow + tensorflow-probability (it runs on TFP, not PyMC/JAX).
+# Pinned for reproducibility — bump deliberately after testing.
+google-meridian==1.6.2
+
+# Listed explicitly for clarity (meridian depends on these too).
 numpy>=1.24
 pandas>=2.0
 matplotlib>=3.7
 arviz>=0.16
-tensorflow>=2.13
-tensorflow-probability>=0.21
 scipy>=1.10

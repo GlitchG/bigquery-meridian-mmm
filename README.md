@@ -49,14 +49,22 @@ Search is almost certainly profitable (99% probability). Social might be losing 
 git clone https://github.com/GlitchG/bigquery-meridian-mmm.git
 cd bigquery-meridian-mmm
 
-# Install Meridian (from GitHub — not on PyPI)
+# Install Meridian (published on PyPI as google-meridian) + deps
 pip install -r requirements.txt
-
-# Or manually:
-pip install git+https://github.com/google/meridian.git
 ```
 
 Meridian runs on TensorFlow Probability and ships prebuilt wheels, so no C compiler is needed — but TensorFlow is a heavy dependency and is picky about Python version. Use a supported Python (3.10–3.12) in a fresh virtualenv if the install fails.
+
+### Try it on synthetic data first (no BigQuery needed)
+
+Before wiring up your own GA4 export, run the whole pipeline end-to-end on a generated dataset:
+
+```bash
+python python/generate_sample_data.py   # writes mmm_input.csv (156 weeks, 6 channels)
+python models/meridian_mmm.py           # fits the model, writes output/
+```
+
+The generator bakes in **known true ROIs** per channel (see the data dictionary in `GUIDE.md`), so you can sanity-check that Meridian recovers numbers close to them. Once that works, swap in your own `mmm_input.csv` from BigQuery.
 
 ## Running it on your GA4 data
 
