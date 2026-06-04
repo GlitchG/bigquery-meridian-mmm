@@ -7,10 +7,9 @@ class Settings(BaseSettings):
     # Telegram
     TELEGRAM_BOT_TOKEN: str
 
-    # Asana
-    ASANA_ACCESS_TOKEN: str
-    ASANA_WORKSPACE_GID: str
-    ASANA_PROJECT_GID: str  # default project for new tasks
+    # ClickUp
+    CLICKUP_API_TOKEN: str
+    CLICKUP_LIST_ID: str  # ID списка, куда падают задачи
 
     # Ollama / Hermes
     OLLAMA_BASE_URL: str = "http://localhost:11434"
@@ -18,11 +17,11 @@ class Settings(BaseSettings):
 
     # Whisper (faster-whisper)
     WHISPER_MODEL: str = "large-v3-turbo"
-    WHISPER_DEVICE: str = "cuda"          # "cuda" or "cpu"
-    WHISPER_COMPUTE_TYPE: str = "float16" # "float16" on GPU, "int8" on CPU
+    WHISPER_DEVICE: str = "cuda"          # "cuda" или "cpu"
+    WHISPER_COMPUTE_TYPE: str = "float16" # "float16" на GPU, "int8" на CPU
     WHISPER_LANGUAGE: str = "ru"
 
-    # Max audio file size the bot will accept (MB)
+    # Максимальный размер аудиофайла (МБ)
     AUDIO_MAX_SIZE_MB: int = 200
 
 

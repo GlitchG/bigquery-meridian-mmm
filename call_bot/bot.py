@@ -1,12 +1,12 @@
 """
-Telegram bot: audio → Whisper → Hermes → Asana.
+Telegram bot: audio → Whisper → Hermes → ClickUp.
 
 Flow:
   1. User sends voice / audio file / audio document
   2. Bot transcribes with faster-whisper
   3. Hermes (via Ollama) extracts summary + tasks
   4. Bot shows results in chat
-  5. User sends /asana → tasks are created in Asana
+  5. User sends /clickup → tasks are created in ClickUp
 """
 
 import html
@@ -24,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from asana_client import AsanaClient
+from clickup_client import ClickUpClient
 from config import settings
 from llm import HermesClient
 from transcriber import Transcriber
@@ -43,13 +43,12 @@ transcriber = Transcriber(
     language=settings.WHISPER_LANGUAGE,
 )
 hermes = HermesClient(base_url=settings.OLLAMA_BASE_URL, model=settings.OLLAMA_MODEL)
-asana = AsanaClient(
-    token=settings.ASANA_ACCESS_TOKEN,
-    workspace_gid=settings.ASANA_WORKSPACE_GID,
-    default_project_gid=settings.ASANA_PROJECT_GID,
+clickup = ClickUpClient(
+    token=settings.CLICKUP_API_TOKEN,
+    default_list_id=settings.CLICKUP_LIST_ID,
 )
 
-# pending tasks per chat_id — survives until /asana is called
+# pending tasks per chat_id — живут до /clickup
 _pending: dict[int, list[dict]] = {}
 
 
@@ -66,7 +65,7 @@ def _format_task_list(tasks: list[dict]) -> str:
 
 
 async def _get_audio_file(message):
-    """Return (TelegramFile, suffix) for any audio-type message, or None."""
+    """Return (TelegramFile, suffix) for any audio-type message, or (None, None)."""
     if message.voice:
         return await message.voice.get_file(), ".ogg"
     if message.audio:
@@ -88,8 +87,8 @@ async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_message.reply_text(
         "Привет! Отправь мне запись звонка — голосовое сообщение или аудиофайл.\n\n"
         "Я расшифрую речь, извлеку задачи и покажу тебе.\n"
-        "Потом отправь /asana — и задачи появятся в Asana.\n\n"
-        "/status — показать текущие задачи в очереди\n"
+        "Потом отправь /clickup — и задачи появятся в ClickUp.\n\n"
+        "/status — задачи в очереди\n"
         "/clear  — сбросить очередь"
     )
 
@@ -114,7 +113,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if tg_file is None:
         return
 
-    # Check file size
     if tg_file.file_size and tg_file.file_size > settings.AUDIO_MAX_SIZE_MB * 1024 * 1024:
         await message.reply_text(
             f"Файл слишком большой (лимит {settings.AUDIO_MAX_SIZE_MB} МБ)."
@@ -146,7 +144,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         text = (
             f"<b>Краткое содержание</b>\n{summary}\n\n"
             f"<b>Задачи ({len(tasks)})</b>\n{task_block}\n\n"
-            f"Отправь /asana чтобы создать задачи в Asana."
+            f"Отправь /clickup чтобы создать задачи в ClickUp."
         )
         await status.edit_text(text, parse_mode="HTML")
 
@@ -158,7 +156,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             os.unlink(tmp_path)
 
 
-async def cmd_asana(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_clickup(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     tasks = _pending.get(chat_id)
 
@@ -169,16 +167,16 @@ async def cmd_asana(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     msg = await update.effective_message.reply_text(
-        f"⏳ Создаю {len(tasks)} задач(и) в Asana…"
+        f"⏳ Создаю {len(tasks)} задач(и) в ClickUp…"
     )
 
     created, errors = [], []
     for task in tasks:
         try:
-            data = await asana.create_task(
+            data = await clickup.create_task(
                 name=task["title"],
-                notes=task.get("description", ""),
-                due_on=task.get("due_date") or None,
+                description=task.get("description", ""),
+                due_date=task.get("due_date") or None,
             )
             created.append(data)
         except Exception as exc:
@@ -189,7 +187,7 @@ async def cmd_asana(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
     lines = [f"✅ Создано задач: <b>{len(created)}</b>"]
     for t in created:
-        url = t.get("permalink_url", "")
+        url = t.get("url", "")
         name = html.escape(t["name"])
         lines.append(f"• {name}" + (f'\n  <a href="{url}">открыть</a>' if url else ""))
     lines.extend(errors)
@@ -207,7 +205,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("clear", cmd_clear))
-    app.add_handler(CommandHandler("asana", cmd_asana))
+    app.add_handler(CommandHandler("clickup", cmd_clickup))
     app.add_handler(
         MessageHandler(
             filters.VOICE | filters.AUDIO | filters.Document.ALL,
